@@ -1,9 +1,13 @@
 package services
 
 import (
+	"log"
 	"math"
 
+	"myproject/internal/db"
 	"myproject/internal/models"
+
+	"gorm.io/gorm"
 )
 
 // LocationServiceInterface defines the interface for location operations
@@ -21,20 +25,75 @@ var LocationService LocationServiceInterface = &locationService{}
 
 // UpdateUserLocation updates a user's location
 func (s *locationService) UpdateUserLocation(userId string, lat, lng float64) error {
-	// Implementation to update user location in database
+	log.Printf("UpdateUserLocation called: userId=%s lat=%f lng=%f", userId, lat, lng)
+	var location models.Location
+	result := db.DB.First(&location, "user_id = ?", userId)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			// Create new location record
+			location = models.Location{
+				UserID:    userId,
+				Latitude:  lat,
+				Longitude: lng,
+			}
+			if err := db.DB.Create(&location).Error; err != nil {
+				return err
+			}
+		} else {
+			return result.Error
+		}
+	} else {
+		// Update existing location record
+		location.Latitude = lat
+		location.Longitude = lng
+		if err := db.DB.Save(&location).Error; err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // GetUserLocation gets a user's current location
 func (s *locationService) GetUserLocation(userId string) (float64, float64, error) {
-	// Implementation to get user location from database
-	return 0.0, 0.0, nil
+	log.Printf("GetUserLocation called: userId=%s", userId)
+	var location models.Location
+	result := db.DB.First(&location, "user_id = ?", userId)
+	if result.Error != nil {
+		return 0.0, 0.0, result.Error
+	}
+	return location.Latitude, location.Longitude, nil
 }
 
 // FindNearbyUsers finds users within a given radius
 func (s *locationService) FindNearbyUsers(userId string, lat, lng, radiusKm float64) ([]models.NearbyUser, error) {
-	// Implementation using Haversine formula to find nearby users
-	return []models.NearbyUser{}, nil
+	log.Printf("FindNearbyUsers called: userId=%s lat=%f lng=%f radiusKm=%f", userId, lat, lng, radiusKm)
+	var nearbyUsers []models.NearbyUser
+	query := `
+	SELECT user_id, (
+		6371 * acos(
+			cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) +
+			sin(radians(?)) * sin(radians(latitude))
+		)
+	) AS distance
+	FROM locations
+	WHERE user_id != ?
+	HAVING distance <= ?
+	ORDER BY distance;
+	`
+	rows, err := db.DB.Raw(query, lat, lng, lat, userId, radiusKm).Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var user models.NearbyUser
+		if err := rows.Scan(&user.ID, &user.Distance); err != nil {
+			return nil, err
+		}
+		nearbyUsers = append(nearbyUsers, user)
+	}
+	return nearbyUsers, nil
 }
 
 // HaversineDistance calculates the distance between two points in kilometers

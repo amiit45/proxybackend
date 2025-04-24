@@ -2,15 +2,22 @@ package services
 
 import (
 	"errors"
+	"log"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+
+	"myproject/internal/db"
+	"myproject/internal/models"
 
 	"github.com/dgrijalva/jwt-go"
 )
 
 // AuthServiceInterface defines the interface for auth operations
 type AuthServiceInterface interface {
-	RegisterUser(deviceId string) (string, string, error)
-	LoginUser(deviceId string) (string, error)
+	RegisterUser(username string, password string) (string, string, error)
+	LoginUser(username string, password string) (string, string, error)
 	ValidateToken(token string) (string, error)
 }
 
@@ -25,33 +32,74 @@ var AuthService AuthServiceInterface = &authService{
 }
 
 // RegisterUser registers a new user
-func (s *authService) RegisterUser(deviceId string) (string, string, error) {
-	// Implementation for user registration
-	// In a real application, you would store this in a database
-	userId := generateUniqueId()
+func (s *authService) RegisterUser(username string, password string) (string, string, error) {
+	log.Printf("RegisterUser called: username=%s", username)
 
-	// Generate JWT token
-	token, err := s.generateToken(userId)
+	// Check if user already exists
+	var existingUser models.User
+	err := db.DB.Where("username = ?", username).First(&existingUser).Error
+	if err == nil {
+		return "", "", errors.New("username already exists")
+	} else if err != gorm.ErrRecordNotFound {
+		return "", "", err
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", "", err
 	}
 
-	return userId, token, nil
+	// Create user
+	user := models.User{
+		Username:     username,
+		PasswordHash: string(hashedPassword),
+	}
+
+	if err := db.DB.Create(&user).Error; err != nil {
+		return "", "", err
+	}
+
+	// Generate JWT token
+	token, err := s.generateToken(user.ID)
+	if err != nil {
+		return "", "", err
+	}
+
+	return user.ID, token, nil
 }
 
 // LoginUser authenticates a user
-func (s *authService) LoginUser(deviceId string) (string, error) {
-	// Implementation for user login
-	// In a real application, you would verify from a database
-	userId := "user-id" // Replace with lookup based on deviceId
+func (s *authService) LoginUser(username string, password string) (string, string, error) {
+	log.Printf("LoginUser called: username=%s", username)
 
-	// Generate JWT token
-	token, err := s.generateToken(userId)
-	if err != nil {
-		return "", err
+	if username == "" || password == "" {
+		return "", "", errors.New("username and password required")
 	}
 
-	return token, nil
+	// Find user
+	var user models.User
+	err := db.DB.Where("username = ?", username).First(&user).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return "", "", errors.New("invalid username or password")
+		}
+		return "", "", err
+	}
+
+	// Compare password
+	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
+	if err != nil {
+		return "", "", errors.New("invalid username or password")
+	}
+
+	// Generate JWT token
+	token, err := s.generateToken(user.ID)
+	if err != nil {
+		return "", "", err
+	}
+
+	return user.ID, token, nil
 }
 
 // ValidateToken validates a JWT token and returns the user ID
@@ -88,7 +136,7 @@ func (s *authService) generateToken(userId string) (string, error) {
 }
 
 // generateUniqueId generates a unique ID for a user
-func generateUniqueId() string {
-	// Implementation to generate a unique ID
-	return "user-id"
-}
+// func generateUniqueId() string {
+// 	// Implementation to generate a unique ID
+// 	return "user-id"
+// }
